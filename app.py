@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 from FinMind.data import DataLoader
@@ -7,90 +8,114 @@ import time
 # --- 1. 設定與初始化 ---
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMiAxNjo1MjozMyIsInVzZXJfaWQiOiJab25lIiwiZW1haWwiOiJkZW5pc2U5MTMzMEBnbWFpbC5jb20iLCJpcCI6IjEwMS4xMC45My4xOTgifQ.THF8SO6tE3RlrHH-oXvAjJ3om1s8FO7fG9SJX3KWOB8"
 
-st.set_page_config(page_title="台股波段選股系統 (穩定版)", layout="centered")
+st.set_page_config(page_title="台股波段選股系統 (快掃版)", layout="wide")
 
 @st.cache_resource
 def get_loader():
     dl = DataLoader()
-    try: dl.login_by_token(api_token=FINMIND_TOKEN)
-    except: pass
+    try:
+        dl.login_by_token(api_token=FINMIND_TOKEN)
+    except:
+        pass
     return dl
 
 dl = get_loader()
 
-@st.cache_data(ttl=3600)
-def get_all_ids():
-    try:
-        df = dl.taiwan_stock_info()
-        df = df[df['type'].isin(['twse', 'tpex'])]
-        df = df[df['stock_id'].str.len() == 4]
-        # 排除權證與特殊標的
-        df = df[~df['category'].str.contains('ETF|受益證券|存託憑證|權證', na=False)]
-        return df[['stock_id', 'stock_name']].values.tolist()
-    except: return []
+def get_trading_date():
+    """自動判斷抓取日期 (16:30前抓前一天)"""
+    now = datetime.datetime.now()
+    if now.hour < 17:
+        target_date = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        target_date = now.strftime("%Y-%m-%d")
+    return target_date
 
 def scan_market(progress_bar, status_text):
-    all_stocks = get_all_ids()
-    total = len(all_stocks)
-    # 取近 120 天確保 MA20, MA60 正常
-    end_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=120)).strftime("%Y-%m-%d")
-    picks = []
+    target_date = get_trading_date()
+    status_text.text(f"📅 檢查 {target_date} 全市場數據...")
     
-    for i, (sid, sname) in enumerate(all_stocks):
-        if i % 15 == 0:
-            pct = i / total
-            progress_bar.progress(pct)
-            status_text.text(f"📊 掃描中: {i}/{total} ({sname})")
+    # 1. 抓取全市場當日行情 (一次性)
+    try:
+        all_market = dl.taiwan_stock_daily_all(date=target_date)
+        if all_market.empty:
+            return []
+    except:
+        return []
+
+    # 2. 初步過濾：成交量 > 1500 張 (1,500,000股) 且 股價 > 10 元
+    # 這樣會把 1000 支過濾剩下約 50-80 支，大幅節省 API 次數
+    filtered_df = all_market[(all_market['Trading_Volume'] >= 1500000) & (all_market['close'] >= 10)]
+    filtered_df = filtered_df[filtered_df['stock_id'].str.len() == 4]
+    
+    picks = []
+    total = len(filtered_df)
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=150)).strftime("%Y-%m-%d")
+    
+    for i, (idx, row) in enumerate(filtered_df.iterrows()):
+        sid = row['stock_id']
+        
+        # 進度條更新
+        progress_bar.progress((i + 1) / total)
+        status_text.text(f"🔍 深度分析中 ({i+1}/{total}): {sid}")
         
         try:
-            time.sleep(0.12) 
-            df = dl.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
-            if df is None or len(df) < 60: continue
+            time.sleep(0.15) # 避開 API 頻率限制
+            df = dl.taiwan_stock_daily(stock_id=sid, start_date=start_date)
             
-            df[['close', 'Trading_Volume']] = df[['close', 'Trading_Volume']].apply(pd.to_numeric)
+            if len(df) < 60: continue
+            
             df = df.sort_values('date')
+            df['close'] = pd.to_numeric(df['close'])
+            df['Trading_Volume'] = pd.to_numeric(df['Trading_Volume'])
             
             curr_p = df['close'].iloc[-1]
             curr_v = df['Trading_Volume'].iloc[-1]
             
-            # --- 基本門檻：成交量 > 1000 張 (確保一定有標的) ---
-            if curr_v < 1000000 or curr_p < 10: continue
-            
             # 指標計算
+            ma10 = df['close'].rolling(10).mean().iloc[-1]
             ma20 = df['close'].rolling(20).mean().iloc[-1]
             ma60 = df['close'].rolling(60).mean().iloc[-1]
-            ma10 = df['close'].rolling(10).mean().iloc[-1] # 新增 10 日線
             vol_avg_5d = df['Trading_Volume'].iloc[-6:-1].mean()
             
-            # --- 邏輯修正：放寬突破條件 ---
-            is_trending = curr_p > ma20 > ma60  # 趨勢向上
-            is_strong = curr_p > ma10           # 股價在短均線之上 (不一定要創新高)
-            is_vol_up = curr_v > vol_avg_5d     # 今天有增量 (不一定要 1.2 倍)
+            # 選股邏輯
+            is_trending = curr_p > ma20 > ma60  # 均線多頭
+            is_strong = curr_p > ma10           # 站上短均線
+            is_vol_up = curr_v > vol_avg_5d     # 量增
             bias = (curr_p - ma20) / ma20       # 乖離率
             
-            if is_trending and is_strong and is_vol_up and bias < 0.12:
+            if is_trending and is_strong and is_vol_up and bias < 0.10:
                 picks.append({
-                    "代號": sid, "名稱": sname, "股價": curr_p,
-                    "張數": int(curr_v / 1000), "量比": round(curr_v/vol_avg_5d, 1),
+                    "代號": sid,
+                    "股價": curr_p,
+                    "漲跌": round(curr_p - df['close'].iloc[-2], 2),
+                    "張數": int(curr_v / 1000),
+                    "量比": round(curr_v / vol_avg_5d, 2),
                     "乖離%": round(bias * 100, 2)
                 })
-        except: continue
+        except:
+            continue
+            
     return picks
 
-# --- UI ---
-st.title("🏆 台股波段選股系統 (穩定版)")
-st.write("目前設定：1000張以上 + 均線多頭 + 帶量站上10日線")
+# --- UI 介面 ---
+st.title("🏆 台股波段選股系統 (穩定快掃版)")
+st.info("策略：成交量 > 1500張 + 均線多頭排佈 + 帶量站上10日線 + 低乖離 (10%以內)")
 
-if st.button("🚀 開始掃描", use_container_width=True):
+if st.button("🚀 開始全市場掃描", use_container_width=True):
     bar = st.progress(0)
     status = st.empty()
+    
+    start_time = time.time()
     results = scan_market(bar, status)
+    end_time = time.time()
+    
     bar.progress(1.0)
+    status.text(f"✅ 掃描完成！耗時: {int(end_time - start_time)} 秒")
     
     if results:
         st.balloons()
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        df_res = pd.DataFrame(results)
+        st.dataframe(df_res.sort_values("量比", ascending=False), use_container_width=True)
     else:
-        st.warning("⚠️ 依舊沒有標的。這極可能是因為 FinMind 尚未更新今日收盤數據，請於 16:30 後再試一次，或檢查網路連線。")
+        st.warning("⚠️ 未發現符合條件標的。請確認目前是否為開盤日 16:30 以後，或嘗試調低成交量門檻。")
 
