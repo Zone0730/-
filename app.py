@@ -86,7 +86,7 @@ def scan_market(progress_bar, status_text):
 
 # --- UI ---
 st.title("🏆 台股波段選股系統 (平衡優化版)")
-st.write("目前設定：成交量 > 3,000 張 + 量增 1.2 倍 + 乖離 < 10%")
+st.write("目前設定：成交量 > 500 張 + 量增 1.2 倍 + 乖離 < 10%")
 
 if st.button("🚀 開始掃描", use_container_width=True):
     bar = st.progress(0)
