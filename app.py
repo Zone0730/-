@@ -7,7 +7,7 @@ import time
 
 # --- 1. 初始化與設定 ---
 # 這是你原本提供的 Token
-FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMiAxNjo1MjozMyIsInVzZXJfaWQiOiJab25lIiwiZW1haWwiOiJkZW5pc2U5MTMzMEBnbWFpbC5jb20iLCJpcCI6IjEwMS4xMC45My4xOTgifQ.THF8SO6tE3RlrHH-oXvAjJ3om1s8FO7fG9SJX3KWOB8"
+FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMyAxODo0Mjo0NiIsInVzZXJfaWQiOiJab25lIiwiZW1haWwiOiJkZW5pc2U5MTMzMEBnbWFpbC5jb20iLCJpcCI6IjQ5LjIxNi45MC4xMjEifQ.rGUBHwrSCNbQEx71AB3Qoev38M1ztlRFAiYSG1xO17g"
 
 st.set_page_config(page_title="台股波段選股系統 (穩定修復版)", layout="centered")
 
