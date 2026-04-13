@@ -58,7 +58,7 @@ def scan_market(progress_bar, status_text):
             curr_p = df['close'].iloc[-1]
             
             # --- 調整門檻：3,000 張 (3,000,000 股) ---
-            if curr_v < 3000000 or curr_p < 10:
+            if curr_v < 500000 or curr_p < 10:
                 continue
             
             # 指標計算
