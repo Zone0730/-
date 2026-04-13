@@ -5,14 +5,13 @@ import datetime
 import time
 
 # --- 1. 設定區 ---
-# 建議實務上將 Token 放入 Streamlit Secrets 或環境變數
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMiAxNjo1MjozMyIsInVzZXJfaWQiOiJab25lIiwiZW1haWwiOiJkZW5pc2U5MTMzMEBnbWFpbC5jb20iLCJpcCI6IjEwMS4xMC45My4xOTgifQ.THF8SO6tE3RlrHH-oXvAjJ3om1s8FO7fG9SJX3KWOB8"
 
-st.set_page_config(page_title="台股大成交量選股系統", layout="centered")
+st.set_page_config(page_title="台股大成交量選股系統 v2.0", layout="centered")
 
 @st.cache_resource
 def get_loader():
-    """初始化 DataLoader 並登入"""
+    """初始化 DataLoader"""
     dl = DataLoader()
     try:
         dl.login_by_token(api_token=FINMIND_TOKEN)
@@ -26,11 +25,21 @@ dl = get_loader()
 
 @st.cache_data(ttl=3600)
 def get_all_ids():
-    """取得台股上市櫃 4 碼股票清單"""
+    """精確取得台股上市櫃『普通股』清單，排除權證與 ETF"""
     try:
         df = dl.taiwan_stock_info()
+        # 篩選上市與上櫃
         df = df[df['type'].isin(['twse', 'tpex'])]
+        # 關鍵：股票代碼必須為 4 碼 (排除權證)
         df = df[df['stock_id'].str.len() == 4]
+        # 關鍵：排除名稱或類別包含 ETF、受益證券、存託憑證 (DR) 的標的
+        exclude_list = ['ETF', '受益證券', '存託憑證', '權證']
+        pattern = '|'.join(exclude_list)
+        df = df[~df['category'].str.contains(pattern, na=False)]
+        
+        # 再次確保不包含 00 開頭的 ETF
+        df = df[~df['stock_id'].str.startswith('00')]
+        
         return df[['stock_id', 'stock_name']].values.tolist()
     except:
         return []
@@ -39,28 +48,26 @@ def scan_market(progress_bar, status_text):
     all_stocks = get_all_ids()
     total = len(all_stocks)
     
-    # 取得近 120 天資料以計算 MA60
     end_date = datetime.datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.datetime.now() - datetime.timedelta(days=120)).strftime("%Y-%m-%d")
     
     picks = []
     
     for i, (sid, sname) in enumerate(all_stocks):
-        # UI 更新
+        # UI 更新進度
         if i % 10 == 0:
             pct = i / total
             progress_bar.progress(pct)
             status_text.text(f"📊 掃描進度: {i}/{total} - 檢查中: {sid} {sname}")
         
         try:
-            # API 節流
-            time.sleep(0.15) 
+            # API 節流防護
+            time.sleep(0.12) 
             df = dl.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
             
             if df is None or len(df) < 65:
                 continue
                 
-            # 數值轉型與清洗
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             df['Vol'] = pd.to_numeric(df['Trading_Volume'], errors='coerce')
             df = df.dropna(subset=['close', 'Vol']).sort_values('date')
@@ -68,11 +75,11 @@ def scan_market(progress_bar, status_text):
             curr_v = df['Vol'].iloc[-1]
             curr_p = df['close'].iloc[-1]
             
-            # --- 關鍵篩選條件：成交量超過 5,000 張 (5,000,000 股) ---
+            # --- 篩選門檻：成交量超過 5,000 張 (5,000,000 股) ---
             if curr_v < 5000000 or curr_p < 10:
                 continue
             
-            # --- 計算技術指標 ---
+            # --- 技術指標 ---
             ma_series = df['close'].rolling(20).mean()
             ma60_series = df['close'].rolling(60).mean()
             
@@ -83,12 +90,12 @@ def scan_market(progress_bar, status_text):
             high_10d = df['close'].iloc[-11:-1].max()
             vol_avg_5d = df['Vol'].iloc[-6:-1].mean()
             
-            # --- 選股邏輯 ---
-            is_trending = curr_p > ma20 > ma60
-            is_ma20_up = ma20 > ma20_prev
-            is_breakout = curr_p > high_10d and curr_v > vol_avg_5d * 1.5
+            # --- 選股策略邏輯 ---
+            is_trending = curr_p > ma20 > ma60 # 多頭排列
+            is_ma20_up = ma20 > ma20_prev       # 均線走揚
+            is_breakout = curr_p > high_10d and curr_v > vol_avg_5d * 1.5 # 帶量突破
             bias = (curr_p - ma20) / ma20
-            is_safe_entry = bias < 0.08
+            is_safe_entry = bias < 0.08         # 乖離不過大
             
             if is_trending and is_ma20_up and is_breakout and is_safe_entry:
                 picks.append({
@@ -99,10 +106,7 @@ def scan_market(progress_bar, status_text):
                     "量增倍數": round(curr_v/vol_avg_5d, 1),
                     "乖離率%": round(bias * 100, 2)
                 })
-        except Exception as e:
-            if "Rate limit" in str(e):
-                st.error("🛑 觸發 API 限制，請稍候再試。")
-                break
+        except Exception:
             continue
             
     return picks
@@ -110,9 +114,10 @@ def scan_market(progress_bar, status_text):
 # --- 3. Streamlit 介面 ---
 
 st.title("🏆 台股大成交量選股系統")
-st.write("策略：MA 多頭排列 + 帶量突破 + 成交量 > 5,000 張")
+st.markdown("### 策略核心：人氣熱門股 + 技術面多頭突破")
+st.info("💡 已自動剔除 ETF、權證與受益證券，僅掃描普通股標的。")
 
-if st.button("🚀 開始掃描全市場", use_container_width=True):
+if st.button("🚀 開始掃描全市場標的", use_container_width=True):
     start_time = time.time()
     bar = st.progress(0)
     status = st.empty()
@@ -125,16 +130,14 @@ if st.button("🚀 開始掃描全市場", use_container_width=True):
     
     if results:
         st.balloons()
-        st.subheader(f"🔥 今日推薦標的 ({len(results)} 檔)")
         df_res = pd.DataFrame(results)
-        st.table(df_res)
+        st.subheader(f"🔥 符合條件標的 ({len(results)} 檔)")
+        st.dataframe(df_res, use_container_width=True)
         
-        # 匯出 CSV 功能
         csv = df_res.to_csv(index=False).encode('utf_8_sig')
-        st.download_button("📥 下載選股結果", csv, "picks.csv", "text/csv")
+        st.download_button("📥 下載選股結果 (CSV)", csv, "stock_picks.csv", "text/csv")
     else:
-        st.info("今日未發現符合 5,000 張以上且帶量突破之標的。")
+        st.warning("今日未發現符合 5,000 張以上且帶量突破之標的。")
 
 st.divider()
-st.caption("提示：由於需要檢查 1,800+ 檔股票，約需 5-10 分鐘，請保持網頁開啟。")
-
+st.caption("提示：精簡後掃描總數約 1,800+ 檔，掃描速度將顯著提升。")
